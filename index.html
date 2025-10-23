@@ -5,10 +5,15 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>추첨/호명 관리</title>
   <script src="https://cdn.tailwindcss.com"></script>
-  <meta name="color-scheme" content="light dark" />
+  <meta name="color-scheme" content="light" />
   <style>
     html, body { height: 100%; }
-    /* 스크롤 영역 테이블 고정 헤더 대용 */
+    /* 라이트 모드 강제 및 기본 텍스트 컬러 보장 */
+    :root { color-scheme: light; }
+    body { color: #111827; background-color: #f8fafc; }
+    input, textarea, button, select { color: #111827; }
+    table, th, td { color: #111827; }
+    /* 스크롤 영역 테이블 고정 헤더 */
     thead th { position: sticky; top: 0; background: #f3f4f6; z-index: 1; }
   </style>
 </head>
