@@ -1,0 +1,354 @@
+import React, { useEffect, useMemo, useState } from "react";
+
+// ✅ 단일 파일 React 컴포넌트
+// - 대상자/번호 입력 → 번호 기준 정렬 표시
+// - 체크 시 즉시 목록에서 제거(호명됨 섹션으로 이동)
+// - 로컬스토리지 자동 저장/복원
+// - 중복 번호, 미기입 경고
+// - CSV/줄바꿈/쉼표 혼합 입력 지원
+// - 단일 추가 폼 + 벌크(여러명) 입력 폼 모두 지원
+// - 정렬: 숫자 오름차순
+// - 검색/필터(번호, 이름 일부 일치)
+
+export default function RaffleApp() {
+  const [entries, setEntries] = useState([]); // {name, number}
+  const [called, setCalled] = useState([]); // {name, number, ts}
+
+  const [bulkNames, setBulkNames] = useState("");
+  const [bulkNumbers, setBulkNumbers] = useState("");
+
+  const [singleName, setSingleName] = useState("");
+  const [singleNumber, setSingleNumber] = useState("");
+
+  const [query, setQuery] = useState("");
+
+  // 로컬스토리지 키
+  const KEY = "raffle_app_v1";
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        setEntries(parsed.entries || []);
+        setCalled(parsed.called || []);
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  }, []);
+
+  useEffect(() => {
+    const data = JSON.stringify({ entries, called });
+    localStorage.setItem(KEY, data);
+  }, [entries, called]);
+
+  // 유틸: 텍스트 → 배열 파싱
+  const parseList = (text) => {
+    if (!text.trim()) return [];
+    return text
+      .split(/\n|,|\t|;/g)
+      .map((s) => s.trim())
+      .filter(Boolean);
+  };
+
+  // 벌크 입력으로 페어링 생성 (라인순 매칭)
+  const handlePairing = () => {
+    const names = bulkNames
+      .split(/\n/g)
+      .map((s) => s.trim())
+      .filter(Boolean);
+
+    let numbers = parseList(bulkNumbers).map((n) => Number(n));
+
+    // 이름 줄에 "이름,번호" 또는 "이름 번호" 형태가 섞여있는 경우 자동 추출
+    const autoPairs = [];
+    const remainNames = [];
+    for (const line of names) {
+      const m = line.match(/^(.*?)[,\s]+(-?\d+)$/);
+      if (m) {
+        autoPairs.push({ name: m[1].trim(), number: Number(m[2]) });
+      } else {
+        remainNames.push(line);
+      }
+    }
+
+    const pairs = [...autoPairs];
+
+    for (let i = 0; i < remainNames.length; i++) {
+      const nm = remainNames[i];
+      const num = numbers[i];
+      if (nm && (num || num === 0)) {
+        pairs.push({ name: nm, number: Number(num) });
+      }
+    }
+
+    // 유효성 검사 & 중복 제거 경고 처리
+    const invalid = pairs.filter((p) => !p.name || isNaN(p.number));
+    if (invalid.length) {
+      alert("이름 또는 번호가 비어 있거나 숫자가 아닙니다.\n문제 항목 예: " + invalid[0].name + " / " + invalid[0].number);
+      return;
+    }
+
+    const newAll = mergeUnique(entries, pairs);
+    setEntries(newAll);
+    setBulkNames("");
+    setBulkNumbers("");
+  };
+
+  // 단일 추가
+  const handleAddSingle = () => {
+    const num = Number(singleNumber);
+    if (!singleName.trim() || isNaN(num)) {
+      alert("이름과 숫자 번호를 정확히 입력하세요.");
+      return;
+    }
+    const next = mergeUnique(entries, [{ name: singleName.trim(), number: num }]);
+    setEntries(next);
+    setSingleName("");
+    setSingleNumber("");
+  };
+
+  // 중복 번호 보호 + 같은 번호 있으면 덮어쓸지 선택
+  const mergeUnique = (base, adds) => {
+    const map = new Map(base.map((e) => [e.number, e]));
+    const dups = [];
+    for (const a of adds) {
+      if (map.has(a.number)) dups.push(a);
+    }
+    if (dups.length) {
+      const msg =
+        `중복 번호가 ${dups.length}개 있습니다. 같은 번호는 덮어쓸까요?\n` +
+        dups.map((d) => `#${d.number} ← ${d.name}`).join("\n");
+      const overwrite = confirm(msg);
+      if (!overwrite) {
+        // 덮어쓰기 원치 않으면, 중복 제외하고 추가
+        const filtered = adds.filter((a) => !map.has(a.number));
+        for (const f of filtered) map.set(f.number, f);
+        return Array.from(map.values());
+      }
+    }
+    for (const a of adds) map.set(a.number, a);
+    return Array.from(map.values());
+  };
+
+  // 호명(체크) → 제거
+  const handleCall = (num) => {
+    const target = entries.find((e) => e.number === num);
+    if (!target) return;
+    setEntries((prev) => prev.filter((e) => e.number !== num));
+    setCalled((prev) => [{ ...target, ts: Date.now() }, ...prev]);
+  };
+
+  // 복원
+  const restoreCalled = (num) => {
+    const target = called.find((e) => e.number === num);
+    if (!target) return;
+    setCalled((prev) => prev.filter((e) => e.number !== num));
+    setEntries((prev) => mergeUnique(prev, [{ name: target.name, number: target.number }]));
+  };
+
+  // 전체 삭제/초기화
+  const resetAll = () => {
+    if (!confirm("전체 초기화할까요? (호명됨 포함)")) return;
+    setEntries([]);
+    setCalled([]);
+    localStorage.removeItem(KEY);
+  };
+
+  const sortedEntries = useMemo(
+    () => entries.slice().sort((a, b) => a.number - b.number),
+    [entries]
+  );
+
+  const filteredEntries = useMemo(() => {
+    const q = query.trim();
+    if (!q) return sortedEntries;
+    if (/^\d+$/.test(q)) {
+      const n = Number(q);
+      return sortedEntries.filter((e) => e.number === n);
+    }
+    return sortedEntries.filter((e) => e.name.includes(q));
+  }, [sortedEntries, query]);
+
+  return (
+    <div className="min-h-screen bg-gray-50 p-4 md:p-8">
+      <div className="max-w-6xl mx-auto space-y-6">
+        <header className="flex items-center justify-between">
+          <h1 className="text-2xl md:text-3xl font-bold">🔢 추첨/호명 관리</h1>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={resetAll}
+              className="px-3 py-2 rounded-xl bg-red-500 text-white shadow hover:opacity-90"
+            >
+              전체 초기화
+            </button>
+          </div>
+        </header>
+
+        {/* 입력 영역 */}
+        <section className="grid md:grid-cols-2 gap-6">
+          <div className="bg-white shadow rounded-2xl p-4 space-y-3">
+            <h2 className="text-lg font-semibold">➕ 단일 추가</h2>
+            <div className="grid grid-cols-5 gap-2 items-end">
+              <div className="col-span-3">
+                <label className="text-sm text-gray-600">대상자 이름</label>
+                <input
+                  value={singleName}
+                  onChange={(e) => setSingleName(e.target.value)}
+                  placeholder="예) 김철수"
+                  className="w-full px-3 py-2 rounded-xl border"
+                />
+              </div>
+              <div className="col-span-2">
+                <label className="text-sm text-gray-600">번호(숫자)</label>
+                <input
+                  value={singleNumber}
+                  onChange={(e) => setSingleNumber(e.target.value.replace(/[^\-\d]/g, ""))}
+                  placeholder="예) 12"
+                  className="w-full px-3 py-2 rounded-xl border"
+                />
+              </div>
+              <div className="col-span-5 flex justify-end">
+                <button
+                  onClick={handleAddSingle}
+                  className="px-4 py-2 rounded-xl bg-blue-600 text-white shadow hover:opacity-90"
+                >
+                  추가
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div className="bg-white shadow rounded-2xl p-4 space-y-3">
+            <h2 className="text-lg font-semibold">📥 벌크 입력 (여러 명 한 번에)</h2>
+            <div className="grid md:grid-cols-2 gap-3">
+              <div>
+                <label className="text-sm text-gray-600">대상자 (한 줄에 한 명)</label>
+                <textarea
+                  value={bulkNames}
+                  onChange={(e) => setBulkNames(e.target.value)}
+                  placeholder={`예)\n김철수\n이영희\n박민수, 101  ← 이렇게 '이름,번호'로 써도 자동 인식`}
+                  className="w-full h-36 p-3 rounded-xl border resize-y"
+                />
+              </div>
+              <div>
+                <label className="text-sm text-gray-600">번호 목록 (줄/쉼표/세미콜론 가능)</label>
+                <textarea
+                  value={bulkNumbers}
+                  onChange={(e) => setBulkNumbers(e.target.value)}
+                  placeholder={`예)\n1,2,3,4\n또는\n1\n2\n3\n4`}
+                  className="w-full h-36 p-3 rounded-xl border resize-y"
+                />
+              </div>
+            </div>
+            <div className="flex justify-end">
+              <button
+                onClick={handlePairing}
+                className="px-4 py-2 rounded-xl bg-emerald-600 text-white shadow hover:opacity-90"
+              >
+                페어링 생성
+              </button>
+            </div>
+            <p className="text-xs text-gray-500">
+              * 이름 줄에 "이름,번호" 또는 "이름 번호" 형태가 있으면 번호 칸이 비어도 자동 매칭합니다. 그 외는 왼쪽 이름순과 오른쪽 번호순으로 같은 순서로 짝지어집니다.
+            </p>
+          </div>
+        </section>
+
+        {/* 검색/요약 */}
+        <section className="flex flex-wrap items-center gap-3">
+          <div className="flex-1 min-w-[220px]">
+            <input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="검색: 번호(정확히) 또는 이름 포함"
+              className="w-full px-4 py-2 rounded-2xl border"
+            />
+          </div>
+          <div className="text-sm text-gray-600">
+            총 {entries.length}명 · 호명됨 {called.length}명
+          </div>
+        </section>
+
+        {/* 정렬 표시 */}
+        <section className="bg-white shadow rounded-2xl overflow-hidden">
+          <div className="px-4 py-3 border-b flex items-center justify-between">
+            <h2 className="font-semibold">📋 현재 목록 (번호 오름차순)</h2>
+            <span className="text-sm text-gray-500">체크하면 목록에서 제거됩니다.</span>
+          </div>
+          <div className="max-h-[55vh] overflow-auto">
+            <table className="min-w-full">
+              <thead className="bg-gray-100 text-left">
+                <tr>
+                  <th className="p-3 w-16">호명</th>
+                  <th className="p-3 w-28">번호</th>
+                  <th className="p-3">이름</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredEntries.length === 0 ? (
+                  <tr>
+                    <td colSpan={3} className="p-6 text-center text-gray-400">
+                      항목이 없습니다.
+                    </td>
+                  </tr>
+                ) : (
+                  filteredEntries.map((e) => (
+                    <tr key={e.number} className="border-t hover:bg-gray-50">
+                      <td className="p-3 align-middle">
+                        <input
+                          type="checkbox"
+                          onChange={() => handleCall(e.number)}
+                          title="호명 처리"
+                        />
+                      </td>
+                      <td className="p-3 font-mono">#{e.number}</td>
+                      <td className="p-3">{e.name}</td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        {/* 호명됨 섹션 */}
+        <section className="bg-white shadow rounded-2xl overflow-hidden">
+          <div className="px-4 py-3 border-b flex items-center justify-between">
+            <h2 className="font-semibold">✅ 호명됨 (체크로 제거된 항목)</h2>
+            <span className="text-sm text-gray-500">클릭하면 복원됩니다.</span>
+          </div>
+          <div className="p-3 flex flex-wrap gap-2">
+            {called.length === 0 ? (
+              <span className="text-gray-400">아직 없습니다.</span>
+            ) : (
+              called.map((c) => (
+                <button
+                  key={c.number}
+                  onClick={() => restoreCalled(c.number)}
+                  className="px-3 py-1 rounded-full border shadow-sm hover:bg-gray-50"
+                  title="클릭하여 복원"
+                >
+                  #{c.number} · {c.name}
+                </button>
+              ))
+            )}
+          </div>
+        </section>
+
+        {/* 도움말 */}
+        <details className="bg-white shadow rounded-2xl p-4">
+          <summary className="cursor-pointer font-semibold">도움말</summary>
+          <ul className="list-disc pl-6 text-sm text-gray-700 space-y-1 mt-2">
+            <li>벌크 입력에서는 왼쪽(이름)과 오른쪽(번호)을 같은 순서로 매칭합니다.</li>
+            <li>이름 줄에 <code>이름,번호</code> 또는 <code>이름 번호</code> 형태가 있으면 번호 칸 없이도 자동 인식합니다.</li>
+            <li>체크하면 해당 항목이 즉시 위 목록에서 제거되고, 아래 <b>호명됨</b> 영역으로 이동합니다. 보기를 누르면 다시 복원됩니다.</li>
+            <li>데이터는 브라우저에 자동 저장됩니다(같은 컴퓨터/브라우저에서 유지).</li>
+            <li>중복 번호가 있을 경우, 덮어쓰기 여부를 선택할 수 있습니다.</li>
+          </ul>
+        </details>
+      </div>
+    </div>
+  );
+}
