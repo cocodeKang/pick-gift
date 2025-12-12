@@ -113,212 +113,244 @@
     </details>
   </div>
 
-  <script>
-    (function(){
-      const KEY = 'raffle_app_v1_html';
-      /** @type {{name:string, number:number}[]} */
-      let entries = [];
-      /** @type {{name:string, number:number, ts:number}[]} */
-      let called = [];
+ <script type="module">
+  /* ===== Firebase SDK (CDN) ===== */
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js";
+  import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-auth.js";
+  import { getFirestore, doc, setDoc, onSnapshot, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js";
 
-      // DOM
-      const singleName = document.getElementById('singleName');
-      const singleNumber = document.getElementById('singleNumber');
-      const addSingle = document.getElementById('addSingle');
-      const bulkNames = document.getElementById('bulkNames');
-      const bulkNumbers = document.getElementById('bulkNumbers');
-      const pairing = document.getElementById('pairing');
-      const listBody = document.getElementById('listBody');
-      const calledWrap = document.getElementById('calledWrap');
-      const resetAll = document.getElementById('resetAll');
-      const query = document.getElementById('query');
-      const summary = document.getElementById('summary');
+  /* ===== 당신 콘솔의 SDK 설정값으로 바꿔 넣기 ===== */
+  const firebaseConfig = {
+    apiKey: "YOUR_API_KEY",
+    authDomain: "pick-gift.firebaseapp.com",
+    projectId: "pick-gift",
+    storageBucket: "pick-gift.appspot.com",
+    messagingSenderId: "372503045664",
+    appId: "1:372503045664:web:b6d31074c9dee9a6dfffe45",
+    measurementId: "G-Y5N46XNLH2"
+  };
 
-      // Load
-      try {
-        const raw = localStorage.getItem(KEY);
-        if (raw) {
-          const parsed = JSON.parse(raw);
-          entries = parsed.entries || [];
-          called = parsed.called || [];
-        }
-      } catch (e) { console.error(e); }
+  const app  = initializeApp(firebaseConfig);
+  const auth = getAuth(app);
+  const db   = getFirestore(app);
 
-      function save(){
-        localStorage.setItem(KEY, JSON.stringify({ entries, called }));
-      }
+  /* ===== 방(공유 세션) ID: URL ?room=값 사용 ===== */
+  const url = new URL(location.href);
+  const roomId = url.searchParams.get("room") || "default";
+  const roomRef = doc(db, "rooms", roomId);
 
-      function parseList(text){
-        if (!text || !text.trim()) return [];
-        return text.split(/\n|,|\t|;/g).map(s=>s.trim()).filter(Boolean);
-      }
+  /* ===== 기존 코드의 변수/DOM 참조 그대로 사용 ===== */
+  const KEY = 'raffle_app_v1_html_cache';
+  let entries = [];
+  let called  = [];
 
-      function render(){
-        summary.textContent = `총 ${entries.length}명 · 호명됨 ${called.length}명`;
-        const q = (query.value || '').trim();
-        let list = [...entries].sort((a,b)=>a.number-b.number);
-        if (q) {
-          if (/^\d+$/.test(q)) {
-            const n = Number(q);
-            list = list.filter(e=>e.number===n);
-          } else {
-            list = list.filter(e=>e.name.includes(q));
-          }
-        }
-        listBody.innerHTML = '';
-        if (list.length===0){
-          const tr = document.createElement('tr');
-          const td = document.createElement('td');
-          td.colSpan = 3;
-          td.className = 'p-6 text-center text-gray-400';
-          td.textContent = '항목이 없습니다.';
-          tr.appendChild(td);
-          listBody.appendChild(tr);
-        } else {
-          for (const e of list){
-            const tr = document.createElement('tr');
-            tr.className = 'border-t hover:bg-gray-50';
+  const singleName   = document.getElementById('singleName');
+  const singleNumber = document.getElementById('singleNumber');
+  const addSingle    = document.getElementById('addSingle');
+  const bulkNames    = document.getElementById('bulkNames');
+  const bulkNumbers  = document.getElementById('bulkNumbers');
+  const pairing      = document.getElementById('pairing');
+  const listBody     = document.getElementById('listBody');
+  const calledWrap   = document.getElementById('calledWrap');
+  const resetAll     = document.getElementById('resetAll');
+  const query        = document.getElementById('query');
+  const summary      = document.getElementById('summary');
 
-            const tdCheck = document.createElement('td');
-            tdCheck.className = 'p-3 align-middle';
-            const cb = document.createElement('input');
-            cb.type='checkbox';
-            cb.title='호명 처리';
-            cb.addEventListener('change',()=> handleCall(e.number));
-            tdCheck.appendChild(cb);
-
-            const tdNum = document.createElement('td');
-            tdNum.className = 'p-3 font-mono';
-            tdNum.textContent = `#${e.number}`;
-
-            const tdName = document.createElement('td');
-            tdName.className = 'p-3';
-            tdName.textContent = e.name;
-
-            tr.appendChild(tdCheck); tr.appendChild(tdNum); tr.appendChild(tdName);
-            listBody.appendChild(tr);
-          }
-        }
-
-        // called chips
-        calledWrap.innerHTML = '';
-        if (called.length===0){
-          const span = document.createElement('span');
-          span.className = 'text-gray-400';
-          span.textContent = '아직 없습니다.';
-          calledWrap.appendChild(span);
-        } else {
-          for (const c of called){
-            const btn = document.createElement('button');
-            btn.className = 'px-3 py-1 rounded-full border shadow-sm hover:bg-gray-50';
-            btn.title = '클릭하여 복원';
-            btn.textContent = `#${c.number} · ${c.name}`;
-            btn.addEventListener('click',()=>restoreCalled(c.number));
-            calledWrap.appendChild(btn);
-          }
-        }
-      }
-
-      function mergeUnique(base, adds){
-        const map = new Map(base.map(e=>[e.number, e]));
-        const dups = [];
-        for (const a of adds){ if (map.has(a.number)) dups.push(a); }
-        if (dups.length){
-          const overwrite = confirm(
-            `중복 번호가 ${dups.length}개 있습니다. 같은 번호는 덮어쓸까요?\n`+
-            dups.map(d=>`#${d.number} ← ${d.name}`).join('\n')
-          );
-          if (!overwrite){
-            for (const a of adds){ if (!map.has(a.number)) map.set(a.number, a); }
-            return Array.from(map.values());
-          }
-        }
-        for (const a of adds){ map.set(a.number, a); }
+  /* ===== 유틸 ===== */
+  function parseList(text){
+    if (!text || !text.trim()) return [];
+    return text.split(/\n|,|\t|;/g).map(s=>s.trim()).filter(Boolean);
+  }
+  function mergeUnique(base, adds){
+    const map = new Map(base.map(e=>[e.number, e]));
+    const dups = [];
+    for (const a of adds){ if (map.has(a.number)) dups.push(a); }
+    if (dups.length){
+      const overwrite = confirm(
+        `중복 번호가 ${dups.length}개 있습니다. 같은 번호는 덮어쓸까요?\n`+
+        dups.map(d=>`#${d.number} ← ${d.name}`).join('\n')
+      );
+      if (!overwrite){
+        for (const a of adds){ if (!map.has(a.number)) map.set(a.number, a); }
         return Array.from(map.values());
       }
+    }
+    for (const a of adds){ map.set(a.number, a); }
+    return Array.from(map.values());
+  }
 
-      function handlePairing(){
-        const nameLines = (bulkNames.value||'')
-          .split(/\n/g).map(s=>s.trim()).filter(Boolean);
-        let numbers = parseList(bulkNumbers.value).map(n=>Number(n));
+  /* ===== 렌더 ===== */
+  function render(){
+    summary.textContent = `총 ${entries.length}명 · 호명됨 ${called.length}명`;
+    const q = (query.value || '').trim();
+    let list = [...entries].sort((a,b)=>a.number-b.number);
+    if (q) {
+      if (/^\d+$/.test(q)) list = list.filter(e=>e.number===Number(q));
+      else list = list.filter(e=>e.name.includes(q));
+    }
+    listBody.innerHTML = '';
+    if (list.length===0){
+      const tr = document.createElement('tr');
+      const td = document.createElement('td');
+      td.colSpan = 3;
+      td.className = 'p-6 text-center text-gray-400';
+      td.textContent = '항목이 없습니다.';
+      tr.appendChild(td); listBody.appendChild(tr);
+    } else {
+      for (const e of list){
+        const tr = document.createElement('tr');
+        tr.className = 'border-t hover:bg-gray-50';
 
-        const autoPairs = [];
-        const remainNames = [];
-        for (const line of nameLines){
-          const m = line.match(/^(.*?)[,\s]+(-?\d+)$/);
-          if (m){ autoPairs.push({name:m[1].trim(), number:Number(m[2])}); }
-          else { remainNames.push(line); }
-        }
-        const pairs = [...autoPairs];
-        for (let i=0;i<remainNames.length;i++){
-          const nm = remainNames[i];
-          const num = numbers[i];
-          if (nm && (num===0 || !!num)) pairs.push({name:nm, number:Number(num)});
-        }
-        const invalid = pairs.filter(p=>!p.name || Number.isNaN(p.number));
-        if (invalid.length){
-          alert('이름 또는 번호가 비어 있거나 숫자가 아닙니다.\n문제 항목 예: '+ invalid[0].name + ' / ' + invalid[0].number);
-          return;
-        }
-        entries = mergeUnique(entries, pairs);
-        bulkNames.value = '';
-        bulkNumbers.value = '';
-        save();
-        render();
+        const tdCheck = document.createElement('td');
+        tdCheck.className = 'p-3 align-middle';
+        const cb = document.createElement('input');
+        cb.type='checkbox'; cb.title='호명 처리';
+        cb.addEventListener('change',()=> handleCall(e.number));
+        tdCheck.appendChild(cb);
+
+        const tdNum = document.createElement('td');
+        tdNum.className = 'p-3 font-mono';
+        tdNum.textContent = `#${e.number}`;
+
+        const tdName = document.createElement('td');
+        tdName.className = 'p-3';
+        tdName.textContent = e.name;
+
+        tr.appendChild(tdCheck); tr.appendChild(tdNum); tr.appendChild(tdName);
+        listBody.appendChild(tr);
       }
-
-      function handleAddSingle(){
-        const nm = (singleName.value||'').trim();
-        const numStr = (singleNumber.value||'').replace(/[^-\d]/g,'');
-        const num = Number(numStr);
-        if (!nm || Number.isNaN(num)){
-          alert('이름과 숫자 번호를 정확히 입력하세요.');
-          return;
-        }
-        entries = mergeUnique(entries, [{ name: nm, number: num }]);
-        singleName.value = '';
-        singleNumber.value = '';
-        save();
-        render();
+    }
+    calledWrap.innerHTML = '';
+    if (called.length===0){
+      const span = document.createElement('span');
+      span.className = 'text-gray-400';
+      span.textContent = '아직 없습니다.';
+      calledWrap.appendChild(span);
+    } else {
+      for (const c of called){
+        const btn = document.createElement('button');
+        btn.className = 'px-3 py-1 rounded-full border shadow-sm hover:bg-gray-50';
+        btn.title = '클릭하여 복원';
+        btn.textContent = `#${c.number} · ${c.name}`;
+        btn.addEventListener('click',()=>restoreCalled(c.number));
+        calledWrap.appendChild(btn);
       }
+    }
+  }
 
-      function handleCall(num){
-        const idx = entries.findIndex(e=>e.number===num);
-        if (idx===-1) return;
-        const target = entries[idx];
-        entries.splice(idx,1);
-        called.unshift({ ...target, ts: Date.now() });
-        save();
-        render();
+  /* ===== 로컬 캐시(오프라인 대비) ===== */
+  function saveCache(){ localStorage.setItem(KEY, JSON.stringify({ entries, called })); }
+  function loadCache(){
+    try{
+      const raw = localStorage.getItem(KEY);
+      if (raw){ const p = JSON.parse(raw); entries = p.entries||[]; called = p.called||[]; }
+    }catch(e){ console.error(e); }
+  }
+
+  /* ===== 클라우드 저장 디바운스 ===== */
+  let applyingRemote = false;
+  let saveTimer = null;
+  function queueSave(){
+    saveCache();
+    if (applyingRemote) return;
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(async ()=>{
+      try{
+        await setDoc(roomRef, { entries, called, updatedAt: serverTimestamp() }, { merge: true });
+      }catch(e){ console.error(e); }
+    }, 200);
+  }
+
+  /* ===== 이벤트 핸들러 (원래 로직 유지, save→queueSave만 변경) ===== */
+  function handlePairing(){
+    const nameLines = (bulkNames.value||'').split(/\n/g).map(s=>s.trim()).filter(Boolean);
+    let numbers = parseList(bulkNumbers.value).map(n=>Number(n));
+
+    const autoPairs = [], remainNames = [];
+    for (const line of nameLines){
+      const m = line.match(/^(.*?)[,\s]+(-?\d+)$/);
+      if (m) autoPairs.push({name:m[1].trim(), number:Number(m[2])});
+      else remainNames.push(line);
+    }
+    const pairs = [...autoPairs];
+    for (let i=0;i<remainNames.length;i++){
+      const nm = remainNames[i]; const num = numbers[i];
+      if (nm && (num===0 || !!num)) pairs.push({name:nm, number:Number(num)});
+    }
+    const invalid = pairs.filter(p=>!p.name || Number.isNaN(p.number));
+    if (invalid.length){
+      alert('이름 또는 번호가 비어 있거나 숫자가 아닙니다.\n문제 항목 예: '+ invalid[0].name + ' / ' + invalid[0].number);
+      return;
+    }
+    entries = mergeUnique(entries, pairs);
+    bulkNames.value=''; bulkNumbers.value='';
+    queueSave(); render();
+  }
+
+  function handleAddSingle(){
+    const nm = (singleName.value||'').trim();
+    const numStr = (singleNumber.value||'').replace(/[^-\d]/g,'');
+    const num = Number(numStr);
+    if (!nm || Number.isNaN(num)){ alert('이름과 숫자 번호를 정확히 입력하세요.'); return; }
+    entries = mergeUnique(entries, [{ name: nm, number: num }]);
+    singleName.value=''; singleNumber.value='';
+    queueSave(); render();
+  }
+
+  function handleCall(num){
+    const idx = entries.findIndex(e=>e.number===num);
+    if (idx===-1) return;
+    const target = entries[idx];
+    entries.splice(idx,1);
+    called.unshift({ ...target, ts: Date.now() });
+    queueSave(); render();
+  }
+
+  function restoreCalled(num){
+    const idx = called.findIndex(e=>e.number===num);
+    if (idx===-1) return;
+    const target = called[idx];
+    called.splice(idx,1);
+    entries = mergeUnique(entries, [{ name: target.name, number: target.number }]);
+    queueSave(); render();
+  }
+
+  function doReset(){
+    if (!confirm('전체 초기화할까요? (호명됨 포함)')) return;
+    entries = []; called = [];
+    queueSave(); render();
+  }
+
+  pairing.addEventListener('click', handlePairing);
+  addSingle.addEventListener('click', handleAddSingle);
+  resetAll.addEventListener('click', doReset);
+  query.addEventListener('input', render);
+
+  /* ===== 시작: 익명 로그인 → 실시간 구독 → 초기 렌더 ===== */
+  onAuthStateChanged(auth, async (user)=>{
+    if (!user){ await signInAnonymously(auth); return; }
+
+    loadCache(); render(); // 오프라인 캐시 먼저
+
+    onSnapshot(roomRef, async (snap)=>{
+      if (!snap.exists()){
+        await setDoc(roomRef, { entries, called, updatedAt: serverTimestamp() }, { merge: true });
+        return;
       }
-
-      function restoreCalled(num){
-        const idx = called.findIndex(e=>e.number===num);
-        if (idx===-1) return;
-        const target = called[idx];
-        called.splice(idx,1);
-        entries = mergeUnique(entries, [{ name: target.name, number: target.number }]);
-        save();
-        render();
+      const data = snap.data() || {};
+      applyingRemote = true;
+      try{
+        entries = Array.isArray(data.entries) ? data.entries : [];
+        called  = Array.isArray(data.called)  ? data.called  : [];
+        saveCache(); render();
+      } finally {
+        applyingRemote = false;
       }
+    });
+  });
 
-      function doReset(){
-        if (!confirm('전체 초기화할까요? (호명됨 포함)')) return;
-        entries = [];
-        called = [];
-        localStorage.removeItem(KEY);
-        render();
-      }
+  console.log(`Shared room: ${roomId}  (같은 URL의 ?room=${roomId} 로 접속하면 함께 실시간 공유)`);
+</script>
 
-      // events
-      pairing.addEventListener('click', handlePairing);
-      addSingle.addEventListener('click', handleAddSingle);
-      resetAll.addEventListener('click', doReset);
-      query.addEventListener('input', render);
-
-      // 초기 렌더
-      render();
-    })();
-  </script>
 </body>
 </html>
